@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>git-lite</title>
+<style>
+:root{
+  --bg:oklch(97.5% .008 110);
+  --panel:oklch(94.5% .01 110);
+  --line:oklch(87% .012 110);
+  --ink:oklch(28% .015 250);
+  --mut:oklch(52% .02 250);
+  --acc:oklch(54% .15 252);
+  --acc-ink:oklch(99% 0 0);
+  --acc-soft:oklch(93% .05 252);
+  --good:oklch(55% .13 155);
+  --bad:oklch(55% .16 25);
+  --row:oklch(96% .008 110);
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:oklch(25% .012 250);
+    --panel:oklch(29% .014 250);
+    --line:oklch(36% .016 250);
+    --ink:oklch(90% .01 250);
+    --mut:oklch(70% .02 250);
+    --acc:oklch(72% .12 252);
+    --acc-ink:oklch(22% .02 252);
+    --acc-soft:oklch(34% .06 252);
+    --good:oklch(72% .12 155);
+    --bad:oklch(70% .14 25);
+    --row:oklch(27% .012 250);
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);
+  font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  min-height:100vh}
+.top{display:flex;align-items:center;gap:12px;padding:10px 18px;
+  background:var(--panel);border-bottom:1px solid var(--line)}
+.wordmark{font-size:16px;font-weight:700;letter-spacing:-.01em}
+.wordmark em{font-style:normal;color:var(--acc)}
+.top .meta{margin-left:auto;display:flex;align-items:center;gap:12px;
+  font-size:12.5px;color:var(--mut)}
+.health{display:inline-flex;align-items:center;gap:6px}
+.health i{width:8px;height:8px;border-radius:50%;background:var(--mut);font-style:normal}
+.health.ok i{background:var(--good)}
+.health.down i{background:var(--bad)}
+.banner{display:none;padding:8px 18px;font-size:13px;color:var(--acc-ink);background:var(--bad)}
+.banner.show{display:block}
+.layout{display:grid;grid-template-columns:290px minmax(0,1fr);align-items:start}
+.side{border-right:1px solid var(--line);padding:14px;min-height:calc(100vh - 46px)}
+.search{width:100%;padding:8px 10px;font:inherit;font-size:13px;color:var(--ink);
+  background:var(--bg);border:1px solid var(--line);border-radius:8px;margin-bottom:10px}
+.search:focus{outline:2px solid var(--acc);outline-offset:1px;border-color:var(--acc)}
+.repos{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+.repos button{width:100%;display:block;text-align:left;font:inherit;color:var(--ink);
+  background:transparent;border:1px solid transparent;border-radius:8px;
+  padding:8px 10px;cursor:pointer;min-height:44px}
+.repos button:hover{background:var(--row)}
+.repos button:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
+.repos button.sel{background:var(--acc-soft);border-color:var(--acc)}
+.repos .name{font-weight:600;font-size:13.5px;display:block;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.repos .sub{font-size:12px;color:var(--mut);display:block;margin-top:1px}
+.repos .empty{color:var(--mut);padding:8px 10px;font-size:13px}
+.main{padding:18px 22px 40px;min-width:0;max-width:1100px}
+.crumb{font-size:12px;color:var(--mut);margin-bottom:2px}
+h1.repo{font-size:20px;font-weight:700;letter-spacing:-.01em;margin:0 0 2px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.activity{font-size:12.5px;color:var(--mut);margin-bottom:14px}
+.pills{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.pills:empty{display:none}
+.pill{font:inherit;font-size:12.5px;padding:5px 13px;min-height:32px;border-radius:999px;
+  border:1px solid var(--line);background:transparent;color:var(--ink);cursor:pointer}
+.pill:hover{border-color:var(--acc)}
+.pill:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
+.pill[aria-pressed="true"]{background:var(--acc);border-color:var(--acc);
+  color:var(--acc-ink);font-weight:600}
+table.log{width:100%;border-collapse:collapse;font-size:13px}
+.log thead th{position:sticky;top:0;background:var(--bg);text-align:left;
+  font-size:11.5px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;
+  color:var(--mut);padding:8px 10px;border-bottom:1px solid var(--line)}
+.log td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+.log tbody tr:hover{background:var(--row)}
+.idbtn{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--acc);
+  background:transparent;border:0;padding:2px 0;cursor:pointer;white-space:nowrap}
+.idbtn:focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:4px}
+td.msg{max-width:60ch;overflow-wrap:anywhere}
+td.who{white-space:nowrap}
+td.when{white-space:nowrap;color:var(--mut);font-size:12.5px}
+.skel td{padding:10px}
+.skel span{display:block;height:12px;border-radius:6px;background:var(--line)}
+.hint{color:var(--mut);font-size:13px}
+.teach{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:16px 18px;font-size:13px;max-width:62ch}
+.teach code{font:12.5px ui-monospace,SFMono-Regular,Menlo,monospace;
+  background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:1px 6px}
+.err{color:var(--bad);font-size:13px;padding:10px 0}
+.foot{margin-top:26px;font-size:12px;color:var(--mut)}
+@media (max-width:720px){
+  .layout{grid-template-columns:minmax(0,1fr)}
+  .side{border-right:0;border-bottom:1px solid var(--line);min-height:0}
+  .repos{flex-direction:row;overflow-x:auto;padding-bottom:4px}
+  .repos button{min-width:150px}
+  .main{padding:14px 14px 32px}
+}
+@media (prefers-reduced-motion: reduce){
+  *{transition:none}
+}
+.repos button,.pill,.idbtn{transition:background-color 180ms ease-out,border-color 180ms ease-out}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wordmark">git<em>-lite</em></div>
+  <div class="meta">
+    <span id="count"></span>
+    <span class="health" id="health"><i></i><span id="healthTx">checking</span></span>
+  </div>
+</header>
+<div class="banner" id="banner" role="alert">server unreachable, retrying</div>
+<div class="layout">
+  <aside class="side">
+    <input class="search" id="q" type="search" placeholder="filter repos" aria-label="filter repos" autocomplete="off">
+    <ul class="repos" id="repos"></ul>
+  </aside>
+  <main class="main">
+    <div class="crumb" id="crumb">status board</div>
+    <h1 class="repo" id="title">Select a repo</h1>
+    <div class="activity" id="activity"></div>
+    <div class="pills" id="pills" role="group" aria-label="branches"></div>
+    <div id="detail"><p class="hint">pick a repo on the left to see its branches and history</p></div>
+    <div class="foot">served by gl-server, one static file, refreshes every 5s</div>
+  </main>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const reposEl = $('repos'), pillsEl = $('pills'), detailEl = $('detail'),
+      titleEl = $('title'), activityEl = $('activity'), crumbEl = $('crumb'),
+      healthEl = $('health'), healthTx = $('healthTx'), banner = $('banner'),
+      countEl = $('count'), q = $('q');
+let names = [], meta = {}, selected = null, branch = null, firstDetail = true;
+
+function esc(s){
+  return String(s).replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+async function jget(url){
+  const r = await fetch(url);
+  if(!r.ok) throw new Error(r.status + ' ' + url);
+  return r.json();
+}
+function rel(t){
+  if(!t) return '';
+  const s = Math.max(0, Math.floor(Date.now()/1000) - t);
+  if(s < 60) return s + 's ago';
+  if(s < 3600) return Math.floor(s/60) + 'm ago';
+  if(s < 86400) return Math.floor(s/3600) + 'h ago';
+  return Math.floor(s/86400) + 'd ago';
+}
+function full(t){ return t ? new Date(t*1000).toLocaleString() : ''; }
+function setHealth(ok){
+  healthEl.classList.toggle('ok', ok);
+  healthEl.classList.toggle('down', !ok);
+  healthTx.textContent = ok ? 'online' : 'offline';
+  banner.classList.toggle('show', !ok);
+}
+
+async function loadRepos(){
+  try{
+    const data = await jget('/api/repos');
+    setHealth(true);
+    names = Array.isArray(data) ? data.slice() : (data.repos || []).slice();
+    names.sort();
+    countEl.textContent = names.length ? names.length + (names.length === 1 ? ' repo' : ' repos') : '';
+    await Promise.all(names.map(async n => {
+      const name = typeof n === 'string' ? n : n.name;
+      try{
+        const [refs, log] = await Promise.all([
+          jget('/api/repos/' + encodeURIComponent(name) + '/refs'),
+          jget('/api/repos/' + encodeURIComponent(name) + '/log?n=1')
+        ]);
+        const branches = Object.keys(refs.refs || refs.branches || refs);
+        const top = Array.isArray(log) ? log[0] : (log.log || log.commits || [])[0];
+        meta[name] = { b: branches.length, t: top && top.time, m: top && top.message };
+      }catch(e){ meta[name] = meta[name] || { b: 0 }; }
+    }));
+    if(selected && !names.some(n => (typeof n === 'string' ? n : n.name) === selected)){
+      selected = null; branch = null;
+    }
+    renderRepos();
+    if(selected) refreshDetail();
+    else if(!names.length) renderEmpty();
+  }catch(e){
+    setHealth(false);
+    reposEl.innerHTML = '<li class="empty">server unreachable</li>';
+  }
+}
+function renderEmpty(){
+  titleEl.textContent = 'No repos yet';
+  activityEl.textContent = '';
+  pillsEl.innerHTML = '';
+  detailEl.innerHTML = '<div class="teach"><p>Push your first repo, then it shows up here.</p>' +
+    '<p><code>gl init</code> then <code>gl save -m "start"</code> then <code>gl push</code></p></div>';
+}
+function renderRepos(){
+  const f = q.value.trim().toLowerCase();
+  reposEl.innerHTML = '';
+  const list = names.filter(n => {
+    const name = typeof n === 'string' ? n : n.name;
+    return !f || name.toLowerCase().includes(f);
+  });
+  if(!list.length){
+    reposEl.innerHTML = '<li class="empty">' +
+      (names.length ? 'no match' : 'no repos yet') + '</li>';
+    return;
+  }
+  list.forEach(n => {
+    const name = typeof n === 'string' ? n : n.name;
+    const m = meta[name] || {};
+    const li = document.createElement('li');
+    const b = document.createElement('button');
+    if(name === selected) b.classList.add('sel');
+    const sub = (m.b ? m.b + (m.b === 1 ? ' branch' : ' branches') : 'no branches') +
+      (m.t ? ', ' + rel(m.t) : '');
+    b.innerHTML = '<span class="name">' + esc(name) + '</span><span class="sub">' + esc(sub) + '</span>';
+    b.onclick = () => selectRepo(name);
+    li.appendChild(b);
+    reposEl.appendChild(li);
+  });
+}
+function selectRepo(name){
+  selected = name; branch = null; firstDetail = true;
+  titleEl.textContent = name;
+  crumbEl.textContent = 'repos / ' + name;
+  renderRepos();
+  refreshDetail();
+}
+function skeleton(){
+  let h = '<table class="log skel"><tbody>';
+  for(let i = 0; i < 5; i++)
+    h += '<tr><td style="width:90px"><span></span></td><td><span></span></td>' +
+         '<td style="width:110px"><span></span></td><td style="width:120px"><span></span></td></tr>';
+  detailEl.innerHTML = h + '</tbody></table>';
+}
+async function refreshDetail(){
+  if(!selected) return;
+  if(firstDetail){ skeleton(); firstDetail = false; }
+  try{
+    const refs = await jget('/api/repos/' + encodeURIComponent(selected) + '/refs');
+    const map = refs.refs || refs.branches || refs;
+    const branches = Array.isArray(map) ? map : Object.keys(map);
+    pillsEl.innerHTML = '';
+    const all = document.createElement('button');
+    all.className = 'pill';
+    all.textContent = 'all';
+    all.setAttribute('aria-pressed', branch === null ? 'true' : 'false');
+    all.onclick = () => { branch = null; firstDetail = true; refreshDetail(); };
+    pillsEl.appendChild(all);
+    branches.forEach(b => {
+      const name = typeof b === 'string' ? b.split(' ').shift() : b.name;
+      const p = document.createElement('button');
+      p.className = 'pill';
+      p.textContent = name;
+      p.setAttribute('aria-pressed', branch === name ? 'true' : 'false');
+      p.onclick = () => { branch = name; firstDetail = true; refreshDetail(); };
+      pillsEl.appendChild(p);
+    });
+    const url = '/api/repos/' + encodeURIComponent(selected) + '/log?n=100' +
+      (branch ? '&branch=' + encodeURIComponent(branch) : '');
+    const data = await jget(url);
+    const commits = Array.isArray(data) ? data : (data.log || data.commits || []);
+    if(!commits.length){
+      detailEl.innerHTML = '<p class="hint">no commits' +
+        (branch ? ' on ' + esc(branch) : ' yet') + '</p>';
+    }else{
+      const top = commits[0];
+      activityEl.textContent = 'latest: ' + (top.message || '') + ' (' + rel(top.time) + ')';
+      let h = '<table class="log"><thead><tr><th>id</th><th>message</th>' +
+              '<th>author</th><th>time</th></tr></thead><tbody>';
+      commits.forEach(c => {
+        h += '<tr><td><button class="idbtn" data-id="' + esc(c.id || '') +
+             '" title="click to copy full id">' + esc(String(c.id || '').slice(0, 8)) +
+             '</button></td><td class="msg">' + esc(c.message || '') + '</td>' +
+             '<td class="who">' + esc(c.author || '') + '</td>' +
+             '<td class="when" title="' + esc(full(c.time)) + '">' + esc(rel(c.time)) + '</td></tr>';
+      });
+      detailEl.innerHTML = h + '</tbody></table>';
+      detailEl.querySelectorAll('.idbtn').forEach(btn => {
+        btn.onclick = async () => {
+          try{ await navigator.clipboard.writeText(btn.dataset.id); }
+          catch(e){
+            const t = document.createElement('textarea');
+            t.value = btn.dataset.id; document.body.appendChild(t);
+            t.select(); document.execCommand('copy'); t.remove();
+          }
+          const old = btn.textContent;
+          btn.textContent = 'copied';
+          setTimeout(() => { btn.textContent = old; }, 800);
+        };
+      });
+    }
+    setHealth(true);
+  }catch(e){
+    setHealth(false);
+    detailEl.innerHTML = '<p class="err">failed to load, retrying</p>';
+  }
+}
+q.addEventListener('input', renderRepos);
+async function tick(){
+  if(document.hidden) return;
+  if(selected) await refreshDetail();
+  else await loadRepos();
+}
+(async () => {
+  await loadRepos();
+  setInterval(loadRepos, 5000);
+  setInterval(async () => { if(selected && !document.hidden) await refreshDetail(); }, 5000);
+  document.addEventListener('visibilitychange', () => { if(!document.hidden) tick(); });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+[package]
+name = "gl-client"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "gl"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+blake3 = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+walkdir = "2"
+gl-core = { path = "../gl-core" }

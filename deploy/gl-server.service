@@ -1,0 +1,16 @@
+[Unit]
+Description=git-lite server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/gl-server
+Environment=GL_DATA=/var/lib/git-lite
+Environment=PORT=7331
+Restart=on-failure
+RestartSec=2
+User=git-lite
+WorkingDirectory=/var/lib/git-lite
+
+[Install]
+WantedBy=multi-user.target
