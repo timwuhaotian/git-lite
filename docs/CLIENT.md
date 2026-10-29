@@ -6,7 +6,7 @@ worktrees and sync. Anything not in `gl --help` does not exist.
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/timwuhaotian/git-lite/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/timwuhaotian/git-lite/master/install.sh | sh
 gl --version
 ```
 

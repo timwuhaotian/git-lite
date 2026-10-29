@@ -7,13 +7,13 @@ proxy.
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/timwuhaotian/git-lite/main/install.sh | sh -s -- server
+curl -fsSL https://raw.githubusercontent.com/timwuhaotian/git-lite/master/install.sh | sh -s -- server
 ```
 
 For a system directory:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/timwuhaotian/git-lite/main/install.sh | sudo sh -s -- server
+curl -fsSL https://raw.githubusercontent.com/timwuhaotian/git-lite/master/install.sh | sudo sh -s -- server
 ```
 
 The installer requires `curl` and prefers a prebuilt archive (`tar` required).

@@ -29,13 +29,13 @@ gl push                        # home server has it in a second
 Install the client on macOS or Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/timwuhaotian/git-lite/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/timwuhaotian/git-lite/master/install.sh | sh
 ```
 
 Install and start a server:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/timwuhaotian/git-lite/main/install.sh | sh -s -- server
+curl -fsSL https://raw.githubusercontent.com/timwuhaotian/git-lite/master/install.sh | sh -s -- server
 PORT=7331 GL_DATA=./data gl-server
 ```
 
