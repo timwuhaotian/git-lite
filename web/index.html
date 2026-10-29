@@ -142,7 +142,7 @@ const reposEl = $('repos'), pillsEl = $('pills'), detailEl = $('detail'),
       titleEl = $('title'), activityEl = $('activity'), crumbEl = $('crumb'),
       healthEl = $('health'), healthTx = $('healthTx'), banner = $('banner'),
       countEl = $('count'), q = $('q');
-let names = [], meta = {}, selected = null, branch = null, firstDetail = true;
+let names = [], meta = {}, selected = null, branch = null, firstDetail = true, detailSeq = 0;
 
 function esc(s){
   return String(s).replace(/[&<>"']/g, c =>
@@ -208,6 +208,10 @@ function renderEmpty(){
 }
 function renderRepos(){
   const f = q.value.trim().toLowerCase();
+  const active = document.activeElement;
+  const focusName = active && reposEl.contains(active) && active.tagName === 'BUTTON'
+    ? active.querySelector('.name').textContent : null;
+  let focusBtn = null;
   reposEl.innerHTML = '';
   const list = names.filter(n => {
     const name = typeof n === 'string' ? n : n.name;
@@ -230,11 +234,14 @@ function renderRepos(){
     b.onclick = () => selectRepo(name);
     li.appendChild(b);
     reposEl.appendChild(li);
+    if(name === focusName) focusBtn = b;
   });
+  if(focusBtn) focusBtn.focus({preventScroll:true});
 }
 function selectRepo(name){
   selected = name; branch = null; firstDetail = true;
   titleEl.textContent = name;
+  activityEl.textContent = '';
   crumbEl.textContent = 'repos / ' + name;
   renderRepos();
   refreshDetail();
@@ -248,16 +255,18 @@ function skeleton(){
 }
 async function refreshDetail(){
   if(!selected) return;
+  const repo = selected, currentBranch = branch, seq = ++detailSeq;
   if(firstDetail){ skeleton(); firstDetail = false; }
   try{
-    const refs = await jget('/api/repos/' + encodeURIComponent(selected) + '/refs');
+    const refs = await jget('/api/repos/' + encodeURIComponent(repo) + '/refs');
+    if(seq !== detailSeq) return;
     const map = refs.refs || refs.branches || refs;
     const branches = Array.isArray(map) ? map : Object.keys(map);
     pillsEl.innerHTML = '';
     const all = document.createElement('button');
     all.className = 'pill';
     all.textContent = 'all';
-    all.setAttribute('aria-pressed', branch === null ? 'true' : 'false');
+    all.setAttribute('aria-pressed', currentBranch === null ? 'true' : 'false');
     all.onclick = () => { branch = null; firstDetail = true; refreshDetail(); };
     pillsEl.appendChild(all);
     branches.forEach(b => {
@@ -265,17 +274,19 @@ async function refreshDetail(){
       const p = document.createElement('button');
       p.className = 'pill';
       p.textContent = name;
-      p.setAttribute('aria-pressed', branch === name ? 'true' : 'false');
+      p.setAttribute('aria-pressed', currentBranch === name ? 'true' : 'false');
       p.onclick = () => { branch = name; firstDetail = true; refreshDetail(); };
       pillsEl.appendChild(p);
     });
-    const url = '/api/repos/' + encodeURIComponent(selected) + '/log?n=100' +
-      (branch ? '&branch=' + encodeURIComponent(branch) : '');
+    const url = '/api/repos/' + encodeURIComponent(repo) + '/log?n=100' +
+      (currentBranch ? '&branch=' + encodeURIComponent(currentBranch) : '');
     const data = await jget(url);
+    if(seq !== detailSeq) return;
     const commits = Array.isArray(data) ? data : (data.log || data.commits || []);
     if(!commits.length){
+      activityEl.textContent = '';
       detailEl.innerHTML = '<p class="hint">no commits' +
-        (branch ? ' on ' + esc(branch) : ' yet') + '</p>';
+        (currentBranch ? ' on ' + esc(currentBranch) : ' yet') + '</p>';
     }else{
       const top = commits[0];
       activityEl.textContent = 'latest: ' + (top.message || '') + ' (' + rel(top.time) + ')';
@@ -305,6 +316,8 @@ async function refreshDetail(){
     }
     setHealth(true);
   }catch(e){
+    if(seq !== detailSeq) return;
+    activityEl.textContent = '';
     setHealth(false);
     detailEl.innerHTML = '<p class="err">failed to load, retrying</p>';
   }

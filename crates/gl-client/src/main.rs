@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -150,12 +150,24 @@ fn write_head(root: &Path, branch: &str) -> Result<()> {
     Ok(())
 }
 
-fn ref_path(root: &Path, branch: &str) -> PathBuf {
-    gl_dir(root).join("refs").join("heads").join(branch)
+fn validate_relative_path(path: &str) -> Result<()> {
+    if path.is_empty()
+        || !Path::new(path)
+            .components()
+            .all(|c| matches!(c, Component::Normal(_)))
+    {
+        bail!("invalid relative path {path:?}");
+    }
+    Ok(())
+}
+
+fn ref_path(root: &Path, branch: &str) -> Result<PathBuf> {
+    validate_relative_path(branch)?;
+    Ok(gl_dir(root).join("refs").join("heads").join(branch))
 }
 
 fn read_tip(root: &Path, branch: &str) -> Result<Option<String>> {
-    let p = ref_path(root, branch);
+    let p = ref_path(root, branch)?;
     if !p.is_file() {
         return Ok(None);
     }
@@ -164,7 +176,7 @@ fn read_tip(root: &Path, branch: &str) -> Result<Option<String>> {
 }
 
 fn write_tip(root: &Path, branch: &str, id: &str) -> Result<()> {
-    let p = ref_path(root, branch);
+    let p = ref_path(root, branch)?;
     if let Some(parent) = p.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -217,11 +229,20 @@ fn load_commit(root: &Path, id: &str) -> Result<Commit> {
 fn store_commit(root: &Path, c: &Commit) -> Result<()> {
     let d = gl_dir(root).join("commits");
     fs::create_dir_all(&d)?;
-    fs::write(d.join(format!("{}.json", c.id)), serde_json::to_string_pretty(c)?)?;
+    fs::write(
+        d.join(format!("{}.json", c.id)),
+        serde_json::to_string_pretty(c)?,
+    )?;
     Ok(())
 }
 
-fn commit_id(parents: &[String], message: &str, author: &str, time: u64, tree: &BTreeMap<String, TreeEntry>) -> String {
+fn commit_id(
+    parents: &[String],
+    message: &str,
+    author: &str,
+    time: u64,
+    tree: &BTreeMap<String, TreeEntry>,
+) -> String {
     let v = serde_json::json!({
         "parents": parents,
         "message": message,
@@ -246,7 +267,11 @@ fn rel_key(root: &Path, path: &Path) -> Option<String> {
 
 fn scan_tree(root: &Path) -> Result<BTreeMap<String, TreeEntry>> {
     let mut tree = BTreeMap::new();
-    for entry in WalkDir::new(root).min_depth(1).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(root)
+        .min_depth(1)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
         let p = entry.path();
         if p.components().any(|c| c.as_os_str() == ".gl") {
             continue;
@@ -284,23 +309,66 @@ fn ancestors_local(root: &Path, tip: &str, stop: &BTreeSet<String>) -> Result<Ve
     Ok(out)
 }
 
-fn checkout(root: &Path, old: &BTreeMap<String, TreeEntry>, new: &BTreeMap<String, TreeEntry>) -> Result<()> {
-    for key in old.keys() {
-        if !new.contains_key(key) {
-            let p = root.join(key);
-            if p.is_file() {
-                fs::remove_file(&p)?;
+fn checkout(
+    root: &Path,
+    old: &BTreeMap<String, TreeEntry>,
+    new: &BTreeMap<String, TreeEntry>,
+) -> Result<()> {
+    for key in old.keys().chain(new.keys()) {
+        validate_relative_path(key)?;
+    }
+
+    let mut removed = Vec::new();
+    for (key, old_entry) in old {
+        let changed = match new.get(key) {
+            None => {
+                removed.push(key);
+                true
+            }
+            Some(new_entry) => old_entry.hash != new_entry.hash || old_entry.size != new_entry.size,
+        };
+        if changed {
+            let bytes = fs::read(root.join(key))
+                .with_context(|| format!("local changes would be overwritten: {key}"))?;
+            if bytes.len() as u64 != old_entry.size
+                || blake3::hash(&bytes).to_hex().to_string() != old_entry.hash
+            {
+                bail!("local changes would be overwritten: {key}");
             }
         }
     }
-    for (key, e) in new {
+    for key in new.keys() {
+        if old.contains_key(key) {
+            continue;
+        }
+        match fs::symlink_metadata(root.join(key)) {
+            Ok(_) => bail!("path already exists: {key}"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    let mut writes = Vec::new();
+    for (key, new_entry) in new {
+        let changed = !old.get(key).is_some_and(|old_entry| {
+            old_entry.hash == new_entry.hash && old_entry.size == new_entry.size
+        });
+        if changed {
+            let bytes = fs::read(object_path(root, &new_entry.hash))
+                .with_context(|| format!("missing object {}", new_entry.hash))?;
+            writes.push((key, bytes));
+        }
+    }
+
+    for key in removed {
+        fs::remove_file(root.join(key))?;
+    }
+    for (key, bytes) in writes {
         let p = root.join(key);
         if let Some(parent) = p.parent() {
             fs::create_dir_all(parent)?;
         }
-        let bytes = fs::read(object_path(root, &e.hash))
-            .with_context(|| format!("missing object {}", e.hash))?;
-        fs::write(&p, bytes)?;
+        fs::write(p, bytes)?;
     }
     Ok(())
 }
@@ -412,7 +480,11 @@ fn post_object(cfg: &Config, hash: &str, bytes: &[u8]) -> Result<()> {
 fn post_push(cfg: &Config, branch: &str, tip_id: &str, commits: &[Commit]) -> Result<()> {
     let url = api(cfg, &format!("/api/repos/{}/push", cfg.repo));
     let body = serde_json::json!({"refs": {branch: tip_id}, "commits": commits});
-    let resp = http()?.post(&url).json(&body).send().context("POST push failed")?;
+    let resp = http()?
+        .post(&url)
+        .json(&body)
+        .send()
+        .context("POST push failed")?;
     if !resp.status().is_success() {
         bail!("POST push failed: {}", resp.status());
     }
@@ -420,14 +492,22 @@ fn post_push(cfg: &Config, branch: &str, tip_id: &str, commits: &[Commit]) -> Re
 }
 
 fn has_commit(root: &Path, id: &str) -> bool {
-    gl_dir(root).join("commits").join(format!("{id}.json")).is_file()
+    gl_dir(root)
+        .join("commits")
+        .join(format!("{id}.json"))
+        .is_file()
 }
 
 fn short(id: &str) -> &str {
     &id[..8.min(id.len())]
 }
 
-fn cmd_init(server: Option<String>, repo: Option<String>, branch: &str, author: Option<String>) -> Result<()> {
+fn cmd_init(
+    server: Option<String>,
+    repo: Option<String>,
+    branch: &str,
+    author: Option<String>,
+) -> Result<()> {
     let root = env::current_dir()?;
     if root.join(".gl").is_dir() {
         bail!("already initialized");
@@ -509,7 +589,9 @@ fn cmd_save(root: &Path, message: &str, author: Option<&str>) -> Result<()> {
 
 fn cmd_log(root: &Path, n: usize, branch: Option<&str>) -> Result<()> {
     let cfg = load_config(root)?;
-    let branch = branch.map(|s| s.to_string()).unwrap_or(current_branch(root, &cfg)?);
+    let branch = branch
+        .map(|s| s.to_string())
+        .unwrap_or(current_branch(root, &cfg)?);
     let Some(mut id) = read_tip(root, &branch)? else {
         return Ok(());
     };
@@ -556,8 +638,7 @@ fn cmd_switch(root: &Path, name: &str) -> Result<()> {
     if cur == name {
         return Ok(());
     }
-    let target_tip = read_tip(root, name)?
-        .ok_or_else(|| anyhow!("unknown branch {name}"))?;
+    let target_tip = read_tip(root, name)?.ok_or_else(|| anyhow!("unknown branch {name}"))?;
     let old = tip_tree(root, &cur)?;
     let new = load_commit(root, &target_tip)?.tree;
     checkout(root, &old, &new)?;
@@ -578,7 +659,11 @@ fn cmd_status(root: &Path) -> Result<()> {
         None => BTreeMap::new(),
     };
     let mut work_hashes: BTreeMap<String, String> = BTreeMap::new();
-    for entry in WalkDir::new(root).min_depth(1).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(root)
+        .min_depth(1)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
         let p = entry.path();
         if p.components().any(|c| c.as_os_str() == ".gl") {
             continue;
@@ -619,19 +704,23 @@ fn cmd_status(root: &Path) -> Result<()> {
     Ok(())
 }
 
+fn worktree_root(cwd: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    }
+}
+
 fn cmd_worktree_add(root: &Path, path: &Path, branch: &str) -> Result<()> {
     let cfg = load_config(root)?;
     let cur = current_branch(root, &cfg)?;
-    if path.exists() {
+    let nroot = worktree_root(&env::current_dir()?, path);
+    if nroot.exists() {
         bail!("path already exists");
     }
     let base_tip = read_tip(root, branch)?.or(read_tip(root, &cur)?);
-    fs::create_dir_all(path)?;
-    let nroot = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        root.join(path)
-    };
+    fs::create_dir_all(&nroot)?;
     fs::create_dir_all(gl_dir(&nroot).join("refs").join("heads"))?;
     fs::create_dir_all(gl_dir(&nroot).join("objects"))?;
     fs::create_dir_all(gl_dir(&nroot).join("commits"))?;
@@ -703,12 +792,17 @@ fn cmd_push(root: &Path) -> Result<()> {
         }
     }
     for h in &hashes {
-        let bytes = fs::read(object_path(root, h))
-            .with_context(|| format!("missing local object {h}"))?;
+        let bytes =
+            fs::read(object_path(root, h)).with_context(|| format!("missing local object {h}"))?;
         post_object(&cfg, h, &bytes)?;
     }
     post_push(&cfg, &branch, &tip_id, &missing)?;
-    println!("push {branch} {} ({} commits, {} objects)", short(&tip_id), missing.len(), hashes.len());
+    println!(
+        "push {branch} {} ({} commits, {} objects)",
+        short(&tip_id),
+        missing.len(),
+        hashes.len()
+    );
     Ok(())
 }
 
@@ -809,7 +903,12 @@ fn cmd_pull(root: &Path) -> Result<()> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Init { server, repo, branch, author } => cmd_init(server, repo, &branch, author),
+        Cmd::Init {
+            server,
+            repo,
+            branch,
+            author,
+        } => cmd_init(server, repo, &branch, author),
         Cmd::Config { key, value, list } => {
             let root = find_root()?;
             cmd_config(&root, key.as_deref(), value.as_deref(), list)
@@ -847,5 +946,117 @@ fn main() -> Result<()> {
             let root = find_root()?;
             cmd_pull(&root)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new() -> Result<Self> {
+            let path = env::temp_dir().join(format!(
+                "gl-client-test-{}-{}",
+                std::process::id(),
+                NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path)?;
+            Ok(Self(path))
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn entry(root: &Path, bytes: &[u8]) -> Result<TreeEntry> {
+        Ok(TreeEntry {
+            hash: store_object(root, bytes)?,
+            size: bytes.len() as u64,
+        })
+    }
+
+    #[test]
+    fn checkout_rejects_path_escape_before_changes() -> Result<()> {
+        let dir = TestDir::new()?;
+        let root = &dir.0;
+        fs::write(root.join("tracked"), b"old")?;
+        let old = BTreeMap::from([("tracked".to_string(), entry(root, b"old")?)]);
+        let new = BTreeMap::from([("../escape".to_string(), entry(root, b"new")?)]);
+
+        assert!(checkout(root, &old, &new).is_err());
+        assert_eq!(fs::read(root.join("tracked"))?, b"old");
+        assert!(!root.parent().unwrap().join("escape").exists());
+
+        for path in ["", "/absolute", "safe/../../escape", "."] {
+            assert!(validate_relative_path(path).is_err(), "accepted {path:?}");
+        }
+        assert!(ref_path(root, "../escape").is_err());
+        assert!(ref_path(root, "/absolute").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn checkout_preserves_unsaved_changes() -> Result<()> {
+        let dir = TestDir::new()?;
+        let root = &dir.0;
+        let old = BTreeMap::from([("file".to_string(), entry(root, b"old")?)]);
+        let new = BTreeMap::from([("file".to_string(), entry(root, b"new")?)]);
+        fs::write(root.join("file"), b"dirty")?;
+
+        assert!(checkout(root, &old, &new).is_err());
+        assert_eq!(fs::read(root.join("file"))?, b"dirty");
+
+        let added = BTreeMap::from([("added".to_string(), entry(root, b"new")?)]);
+        fs::write(root.join("added"), b"existing")?;
+        assert!(checkout(root, &BTreeMap::new(), &added).is_err());
+        assert_eq!(fs::read(root.join("added"))?, b"existing");
+        Ok(())
+    }
+
+    #[test]
+    fn checkout_clean_switch_skips_unchanged_entries() -> Result<()> {
+        let dir = TestDir::new()?;
+        let root = &dir.0;
+        let unchanged = entry(root, b"committed")?;
+        let old = BTreeMap::from([
+            ("changed".to_string(), entry(root, b"old")?),
+            ("removed".to_string(), entry(root, b"removed")?),
+            ("unchanged".to_string(), unchanged.clone()),
+        ]);
+        let new = BTreeMap::from([
+            ("changed".to_string(), entry(root, b"new")?),
+            ("added".to_string(), entry(root, b"added")?),
+            ("unchanged".to_string(), unchanged),
+        ]);
+        fs::write(root.join("changed"), b"old")?;
+        fs::write(root.join("removed"), b"removed")?;
+        fs::write(root.join("unchanged"), b"dirty")?;
+
+        checkout(root, &old, &new)?;
+        checkout(root, &BTreeMap::new(), &BTreeMap::new())?;
+        assert_eq!(fs::read(root.join("changed"))?, b"new");
+        assert_eq!(fs::read(root.join("added"))?, b"added");
+        assert_eq!(fs::read(root.join("unchanged"))?, b"dirty");
+        assert!(!root.join("removed").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn worktree_relative_path_uses_command_cwd() {
+        let cwd = env::temp_dir().join("command-cwd");
+        assert_eq!(
+            worktree_root(&cwd, Path::new("nested/worktree")),
+            cwd.join("nested/worktree")
+        );
+        let absolute = env::temp_dir().join("absolute-worktree");
+        assert_eq!(worktree_root(&cwd, &absolute), absolute);
     }
 }

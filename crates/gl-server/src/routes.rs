@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use axum::{
     body::Bytes,
     extract::{Path, Query, State},
-    http::{StatusCode, header},
+    http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -16,10 +16,14 @@ use crate::store::Store;
 #[derive(Clone)]
 pub struct AppState {
     pub store: Store,
+    push_lock: Arc<Mutex<()>>,
 }
 
 pub fn router(store: Store) -> Router {
-    let state = AppState { store };
+    let state = AppState {
+        store,
+        push_lock: Arc::new(Mutex::new(())),
+    };
     Router::new()
         .route("/api/health", get(health))
         .route("/api/repos", get(list_repos))
@@ -110,6 +114,9 @@ async fn put_object(
     if !Store::valid_name(&name) || !Store::valid_id(&hash) {
         return err(StatusCode::BAD_REQUEST, "invalid name or hash");
     }
+    if gl_core::hash_bytes(&body) != hash {
+        return err(StatusCode::BAD_REQUEST, "object hash mismatch");
+    }
     match s.store.store_object(&name, &hash, &body) {
         Ok(stored) => Json(serde_json::json!({"ok": true, "stored": stored})).into_response(),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
@@ -160,10 +167,19 @@ async fn push(
             return err(StatusCode::BAD_REQUEST, "invalid ref");
         }
     }
+    let _push_guard = match s.push_lock.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
     for v in &commits {
         let id = v.get("id").and_then(|i| i.as_str()).unwrap();
         if let Err(e) = s.store.store_commit(&name, id, v) {
             return err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
+        }
+    }
+    for c in refs.values() {
+        if s.store.read_commit(&name, c).is_none() {
+            return err(StatusCode::BAD_REQUEST, "target commit not found");
         }
     }
     let mut current = s.store.read_refs(&name);
@@ -171,20 +187,19 @@ async fn push(
         match current.get(b) {
             None => {}
             Some(old) if *old == *c => continue,
-            Some(old) => {
-                if !s.store.is_ancestor(&name, old, c) {
-                    return (
-                        StatusCode::CONFLICT,
-                        Json(serde_json::json!({
-                            "error": "non-fast-forward",
-                            "branch": b,
-                            "have": old,
-                            "want": c,
-                        })),
-                    )
-                        .into_response();
-                }
+            Some(old) if !s.store.is_ancestor(&name, old, c) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({
+                        "error": "non-fast-forward",
+                        "branch": b,
+                        "have": old,
+                        "want": c,
+                    })),
+                )
+                    .into_response();
             }
+            Some(_) => {}
         }
     }
     for (b, c) in &refs {
@@ -197,36 +212,136 @@ async fn push(
 }
 
 async fn index() -> impl IntoResponse {
-    let html = index_html().unwrap_or_else(|| "<!doctype html><title>gl-server</title><h1>gl-server</h1>".to_string());
-    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html)
+    (
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        include_str!("../../../web/index.html"),
+    )
 }
 
-fn index_html() -> Option<String> {
-    for c in candidates() {
-        if let Ok(s) = std::fs::read_to_string(&c) {
-            return Some(s);
-        }
-    }
-    None
-}
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Barrier;
+    use std::thread;
 
-fn candidates() -> Vec<PathBuf> {
-    let mut v = vec![
-        PathBuf::from("web/index.html"),
-        PathBuf::from("../web/index.html"),
-        PathBuf::from("../../web/index.html"),
-    ];
-    if let Ok(exe) = std::env::current_exe() {
-        let mut dir = exe.parent().map(|p| p.to_path_buf());
-        for _ in 0..5 {
-            match dir {
-                Some(d) => {
-                    v.push(d.join("web/index.html"));
-                    dir = d.parent().map(|p| p.to_path_buf());
-                }
-                None => break,
-            }
+    use super::*;
+
+    static NEXT_TEMP_DIR: AtomicUsize = AtomicUsize::new(0);
+
+    fn test_store(name: &str) -> Store {
+        let id = NEXT_TEMP_DIR.fetch_add(1, Ordering::Relaxed);
+        Store {
+            root: std::env::temp_dir()
+                .join(format!("gl-server-{name}-{}-{id}", std::process::id())),
         }
     }
-    v
+
+    fn test_state(store: Store) -> AppState {
+        AppState {
+            store,
+            push_lock: Arc::new(Mutex::new(())),
+        }
+    }
+
+    fn commit(id: &str, parents: &[&str]) -> serde_json::Value {
+        serde_json::json!({"id": id, "parents": parents})
+    }
+
+    #[tokio::test]
+    async fn put_object_rejects_hash_mismatch_without_creating_file() {
+        let store = test_store("object-hash");
+        let state = test_state(store.clone());
+        let hash = "0".repeat(64);
+
+        let response = put_object(
+            State(state),
+            Path(("repo".to_string(), hash.clone())),
+            Bytes::from_static(b"wrong contents"),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(store.read_object("repo", &hash).is_none());
+        let _ = std::fs::remove_dir_all(store.root);
+    }
+
+    #[tokio::test]
+    async fn push_rejects_dangling_target_without_updating_refs() {
+        let store = test_store("dangling-ref");
+        store
+            .store_commit("repo", "base", &commit("base", &[]))
+            .unwrap();
+        store
+            .write_refs(
+                "repo",
+                &BTreeMap::from([("main".to_string(), "base".to_string())]),
+            )
+            .unwrap();
+        let state = test_state(store.clone());
+
+        let response = push(
+            State(state),
+            Path("repo".to_string()),
+            Json(serde_json::json!({"refs": {"main": "missing"}})),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(store.read_refs("repo").get("main").unwrap(), "base");
+        let _ = std::fs::remove_dir_all(store.root);
+    }
+
+    #[test]
+    fn concurrent_pushes_from_same_base_allow_only_one_success() {
+        let store = test_store("concurrent-push");
+        store
+            .store_commit("repo", "base", &commit("base", &[]))
+            .unwrap();
+        store
+            .write_refs(
+                "repo",
+                &BTreeMap::from([("main".to_string(), "base".to_string())]),
+            )
+            .unwrap();
+        let state = test_state(store.clone());
+        let barrier = Arc::new(Barrier::new(2));
+        let mut handles = Vec::new();
+
+        for id in ["left", "right"] {
+            let state = state.clone();
+            let barrier = barrier.clone();
+            handles.push(thread::spawn(move || {
+                let body = serde_json::json!({
+                    "refs": {"main": id},
+                    "commits": [commit(id, &["base"])],
+                });
+                barrier.wait();
+                tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap()
+                    .block_on(push(State(state), Path("repo".to_string()), Json(body)))
+                    .status()
+            }));
+        }
+
+        let statuses = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            statuses
+                .iter()
+                .filter(|&&status| status == StatusCode::OK)
+                .count(),
+            1
+        );
+        assert_eq!(
+            statuses
+                .iter()
+                .filter(|&&status| status == StatusCode::CONFLICT)
+                .count(),
+            1
+        );
+        let _ = std::fs::remove_dir_all(store.root);
+    }
 }

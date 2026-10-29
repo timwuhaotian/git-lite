@@ -6,9 +6,20 @@ worktrees and sync. Anything not in `gl --help` does not exist.
 ## Install
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/timwuhaotian/git-lite/main/install.sh | sh
+gl --version
+```
+
+The installer requires `curl` and prefers a prebuilt archive (`tar` required).
+If none is available, it falls back to `cargo install --git`, which requires
+Rust/Cargo; it does not install rustup. Set `GL_INSTALL_DIR` to override the
+install directory.
+
+### Source build
+
+```sh
 cargo build --release -p gl-client
 export PATH="$PWD/target/release:$PATH"   # binary is named `gl`
-gl --version
 ```
 
 ## Connect to a server

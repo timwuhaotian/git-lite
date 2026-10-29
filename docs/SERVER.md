@@ -7,14 +7,31 @@ proxy.
 ## Install
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/timwuhaotian/git-lite/main/install.sh | sh -s -- server
+```
+
+For a system directory:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/timwuhaotian/git-lite/main/install.sh | sudo sh -s -- server
+```
+
+The installer requires `curl` and prefers a prebuilt archive (`tar` required).
+If none is available, it falls back to `cargo install --git`, which requires
+Rust/Cargo; it does not install rustup. Set `GL_INSTALL_DIR` to override the
+install directory.
+
+### Source build
+
+```sh
 cargo build --release -p gl-server
-./target/release/gl-server   # or sudo ./deploy/install.sh (see Deploy)
+./target/release/gl-server
 ```
 
 ## Run
 
 ```sh
-PORT=7331 GL_DATA=./data ./target/release/gl-server
+PORT=7331 GL_DATA=./data gl-server
 ```
 
 - Listens on `0.0.0.0:$PORT`, default `7331`.
@@ -30,9 +47,8 @@ Health check:
 curl localhost:7331/api/health   # {"status":"ok"}
 ```
 
-Web UI: open `http://host:7331/`. Served from `web/index.html` next to the
-checkout (release installs only need the binary; without the file it renders
-a fallback stub, API still works).
+Web UI: open `http://host:7331/`. The page is embedded in `gl-server`, so
+release installs need no web files or source checkout.
 
 ## Deploy (systemd)
 
@@ -42,7 +58,7 @@ sudo ./deploy/install.sh                # build, install bins, enable service
 systemctl status gl-server
 ```
 
-`install.sh` installs `gl-server` and `gl` to `/usr/local/bin`, creates
+`deploy/install.sh` installs `gl-server` and `gl` to `/usr/local/bin`, creates
 `/var/lib/git-lite`, installs `deploy/gl-server.service`. The unit sets
 `GL_DATA=/var/lib/git-lite`, `PORT=7331`, restarts on failure. Override with
 `systemctl edit gl-server`.

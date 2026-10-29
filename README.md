@@ -26,22 +26,22 @@ gl push                        # home server has it in a second
 
 ## Quickstart
 
-Server (Linux, one binary):
+Install the client on macOS or Linux:
 
 ```sh
-cargo build --release -p gl-server
-PORT=7331 GL_DATA=./data ./target/release/gl-server
-curl localhost:7331/api/health   # {"status":"ok"}
+curl -fsSL https://raw.githubusercontent.com/timwuhaotian/git-lite/main/install.sh | sh
 ```
 
-Full guide: [docs/SERVER.md](docs/SERVER.md) (deploy, proxy, API, backup).
-
-Client, daily flow:
+Install and start a server:
 
 ```sh
-cargo build --release -p gl-client
-export PATH="$PWD/target/release:$PATH"
+curl -fsSL https://raw.githubusercontent.com/timwuhaotian/git-lite/main/install.sh | sh -s -- server
+PORT=7331 GL_DATA=./data gl-server
+```
 
+Daily client flow:
+
+```sh
 mkdir demo && cd demo
 gl init --server http://your-host:7331
 echo hello > a.txt
@@ -49,16 +49,9 @@ gl save -m "start"    # snapshot
 gl push               # upload
 ```
 
-New machine, same code:
-
-```sh
-mkdir demo && cd demo
-gl init --server http://your-host:7331 --repo demo
-gl pull               # files appear
-```
-
-Web UI: open `http://your-host:7331/` in any browser. Repo list, branch
-pills, commit history, auto-refresh every 5s, light and dark theme.
+Web UI: open `http://your-host:7331/` in any browser. Source builds and
+deployment: [docs/SERVER.md](docs/SERVER.md). Client workflows:
+[docs/CLIENT.md](docs/CLIENT.md).
 
 ## Commands
 
@@ -95,15 +88,10 @@ keeping `main` running while a feature brews next door.
 
 ## Server and deploy
 
-```sh
-sudo ./deploy/install.sh   # builds release, installs bins + systemd unit
-```
-
 - Listens on `0.0.0.0:$PORT` (default `7331`), data in `$GL_DATA`
   (default `./data`), layout `$GL_DATA/repos/<name>/`.
-- systemd unit: `deploy/gl-server.service` (user `git-lite`, restarts on
-  failure). Create the user first: `useradd -r -m git-lite`.
 - No auth. Run behind a firewall, VPN or reverse proxy.
+- Source builds, systemd, proxy and backup: [docs/SERVER.md](docs/SERVER.md).
 
 ## How it works
 
