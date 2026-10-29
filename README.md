@@ -34,6 +34,8 @@ PORT=7331 GL_DATA=./data ./target/release/gl-server
 curl localhost:7331/api/health   # {"status":"ok"}
 ```
 
+Full guide: [docs/SERVER.md](docs/SERVER.md) (deploy, proxy, API, backup).
+
 Client, daily flow:
 
 ```sh
@@ -59,6 +61,8 @@ Web UI: open `http://your-host:7331/` in any browser. Repo list, branch
 pills, commit history, auto-refresh every 5s, light and dark theme.
 
 ## Commands
+
+Full guide with workflows and troubleshooting: [docs/CLIENT.md](docs/CLIENT.md).
 
 | Command | What it does |
 | ------- | ------------ |
